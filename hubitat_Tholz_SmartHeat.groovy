@@ -1,5 +1,6 @@
 /*
  * Tholz SmartHeat — Hubitat Driver (TCP)
+ * Versão: 1.0 — Build: 2025-10-22
  * Base: VH / TRATO | Ajustes: RNG/ChatGPT
  * - Conexão via rawSocket (porta 4000)
  * - getDevice / setDevice
@@ -12,6 +13,9 @@
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import groovy.transform.Field
+
+@Field static final String DRIVER_VERSION    = "1.0"
+@Field static final String DRIVER_BUILD_DATE = "2025-10-22"
 
 metadata {
     definition(name: "Tholz SmartHeat", namespace: "rng", author: "RNG/ChatGPT") {
@@ -60,6 +64,10 @@ metadata {
         attribute "fwMain",   "string"
         attribute "fwSec",    "string"
 
+        // --- Info do driver ---
++       attribute "driverVersion", "string"
++       attribute "driverBuildDate", "string"
+
     }
 
     preferences {
@@ -71,19 +79,23 @@ metadata {
 }
 
 def installed() {
-    logInfo "Installed"
+    logInfo "Installed — Tholz SmartHeat v${DRIVER_VERSION} (build ${DRIVER_BUILD_DATE})"
     sendEvent(name:"numberOfButtons", value:20)
+    sendDriverInfo()
 }
 
 def updated() {
-    logInfo "Updated"
+    logInfo "Updated — Tholz SmartHeat v${DRIVER_VERSION} (build ${DRIVER_BUILD_DATE})"
     sendEvent(name:"numberOfButtons", value:20)
     unschedule()
     state.remove("rxBuf")
+    sendDriverInfo()
     initialize()
 }
 
 def initialize() {
+    logInfo "Initializing — Tholz SmartHeat v${DRIVER_VERSION} (build ${DRIVER_BUILD_DATE})"
++   sendDriverInfo()
     connectSocket()
     scheduleRefresh()
 }
@@ -159,6 +171,12 @@ def toggleHeatMode() {
 }
 
 // ======== Escrita ========
+
+private void sendDriverInfo() {
+    sendEvent(name:"driverVersion", value: DRIVER_VERSION)
+    sendEvent(name:"driverBuildDate", value: DRIVER_BUILD_DATE)
+    if (logEnable) log.debug "Driver info -> version=${DRIVER_VERSION}, build=${DRIVER_BUILD_DATE}"
+}
 
 private void setOutputById(Integer targetId, Boolean onVal) {
     Map last = state?.lastDevice ?: [:]
