@@ -1,6 +1,6 @@
 /*
  * Tholz SmartHeat — Hubitat Driver (TCP)
- * Versão: 1.1 — Build: 2025-10-22
+ * Versão: 1.2 — Build: 2025-10-22
  * Base: VH / TRATO | Ajustes: RNG/ChatGPT
  * - Conexão via rawSocket (porta 4000)
  * - getDevice / setDevice
@@ -14,7 +14,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import groovy.transform.Field
 
-@Field static final String DRIVER_VERSION    = "1.1"
+@Field static final String DRIVER_VERSION    = "1.2"
 @Field static final String DRIVER_BUILD_DATE = "2025-10-22"
 @Field static final List<String> HEAT_MODE_OPTIONS = ['Off','Ligado','Automático','Econômico']
 
@@ -39,6 +39,7 @@ metadata {
         command "heatDown1C"
         command "toggleHeatMode"
         command "showDriverInfo"
+        command "renderStatus"      // gera/atualiza o atributo HTML de status
 
         // --- Controles dedicados (dropdown) para cada função mapeada em heat0..heat3 ---
         command "setApoioSolar",              [[name:"estado*", type:"ENUM", constraints:["Ligado","Desligado"]]]
@@ -72,6 +73,9 @@ metadata {
         attribute "fwMain",   "string"
         attribute "fwSec",    "string"
 
+       // --- Tela de status (HTML para tile "Attribute") ---
+       attribute "statusHtml", "string"
+
         // --- Info do driver ---
        attribute "driverVersion", "string"
        attribute "driverBuildDate", "string"
@@ -83,6 +87,7 @@ metadata {
         input name: "device_port", type: "number", title: "Porta TCP", defaultValue: 4000, range: "1..65535", required: true
         input name: "autoRefreshSecs", type: "number", title: "Atualizar a cada (s)", defaultValue: 15, range: "5..3600"
         input name: "logEnable", type: "bool", title: "Habilitar debug logging", defaultValue: true
+        input name: "statusAutoUpdate", type: "bool", title: "Atualizar tela de status a cada Refresh", defaultValue: true
     }
 }
 
@@ -91,6 +96,7 @@ def installed() {
     sendEvent(name:"numberOfButtons", value:20)
     sendDriverInfo()
     publishSupportedHeatModes()
+    renderStatus()
 }
 
 def updated() {
@@ -108,6 +114,7 @@ def initialize() {
     sendDriverInfo()
     connectSocket()
     scheduleRefresh()
+    renderStatus()
 }
 
 def scheduleRefresh() {
@@ -142,6 +149,10 @@ def uninstalled() {
 
 def refresh() {
     getDevice()
+    if (settings?.statusAutoUpdate) {
+    // dá um pequeno tempo pro getDevice responder; em seguida renderiza
+        runIn(1, "renderStatus")
+    }
 }
 
 def getDevice() {
@@ -397,6 +408,11 @@ if (heat3?.t4 != null) {
     if (tRecirc != null) sendEvent(name:"tempRecirculacao", value:tRecirc, unit:"°C")
 }
 
+// Atualiza a tela de status assim que houver um payload válido
+    if (settings?.statusAutoUpdate) {
+        runIn(0, "renderStatus")
+    }
+
 // --------- Estados por função (opMode: 1=Ligado / 0=Desligado) ----------
 Integer h0op = (heat0?.opMode instanceof Number) ? (heat0.opMode as Integer) : null
 Integer h1op = (heats?.heat1?.opMode instanceof Number) ? (heats.heat1.opMode as Integer) : null
@@ -638,4 +654,86 @@ private void publishHeat0(Map h) {
     if (op != null) sendEvent(name:"heat0Mode", value: opModeLabel(op, typeVal))
     sendEvent(name:"heat0On", value: on ? "on" : "off")
     if (sp != null) sendEvent(name:"heat0Setpoint", value: sp, unit: "°C")
+}
+
+// ======== Status HTML (Attribute tile) ========
+
+def renderStatus() {
+    String html = buildStatusHtml()
+    // Hubitat recomenda manter <= ~1024-2048 chars no atributo; nosso HTML é enxuto
+    sendEvent(name:"statusHtml", value: html)
+    if (logEnable) log.debug "Status HTML atualizado (${html?.size()} chars)"
+}
+
+private String safe(def v, String defVal = "—") {
+    return (v != null && v.toString().trim()) ? v.toString() : defVal
+}
+
+private String fmtTemp(def v) {
+    return (v != null) ? "${v}°C" : "—"
+}
+
+private String buildStatusHtml() {
+    // Valores principais expostos como atributos
+    def tMain   = device.currentValue("temperature")
+    def tCol    = device.currentValue("tempColetor")
+    def tRes    = device.currentValue("tempReservatorio")
+    def tCons   = device.currentValue("tempConsumo")
+    def tReci   = device.currentValue("tempRecirculacao")
+    def sp      = device.currentValue("heat0Setpoint")
+    def hMode   = device.currentValue("heat0Mode")
+    def hOn     = device.currentValue("heat0On")
+
+    // Pega heatings do último snapshot (se existir) para mostrar resumo
+    Map last   = (state?.lastDevice ?: [:]) as Map
+    Map heats  = (last?.heatings ?: [:]) as Map
+    Map h0     = heats?.heat0 as Map
+    Map h1     = heats?.heat1 as Map
+    Map h2     = heats?.heat2 as Map
+    Map h3     = heats?.heat3 as Map
+
+    def row = { String label, String value ->
+        return """<div class="row"><span class="k">${label}</span><span class="v">${value}</span></div>"""
+    }
+
+    def heatRow = { String name, Map h ->
+        if (!(h instanceof Map)) return ""
+        String on   = (h.on == true) ? "Ligado" : "Desligado"
+        String mode = opModeLabel( (h.opMode instanceof Number) ? (h.opMode as Integer) : null, null )
+        return row(name, "${on} / ${mode}")
+    }
+
+    String css = """
+        <style>
+        .thz-card{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;padding:8px 10px;border-radius:10px;border:1px solid #ddd}
+        .hdr{font-weight:700;margin-bottom:6px;font-size:14px}
+        .rows{display:flex;flex-direction:column;gap:4px}
+        .row{display:flex;justify-content:space-between;gap:10px}
+        .k{opacity:.75}
+        .v{font-weight:600}
+        .sep{height:1px;background:#eee;margin:6px 0}
+        </style>
+    """.trim()
+
+    String body = """
+        <div class="thz-card">
+          <div class="hdr">Tholz SmartHeat — Status</div>
+          <div class="rows">
+            ${row("Temperatura",     fmtTemp(tMain))}
+            ${row("Setpoint",        fmtTemp(sp))}
+            <div class="sep"></div>
+            ${row("Coletor (T0)",    fmtTemp(tCol))}
+            ${row("Reservatório (T1)",fmtTemp(tRes))}
+            ${row("Consumo (T2)",    fmtTemp(tCons))}
+            ${row("Recirculação (T3)",    fmtTemp(tReci))}
+            <div class="sep"></div>
+            ${row("Aquecimento", safe("${safe(hOn)} / ${safe(hMode)}"))}
+            ${heatRow("Apoio Gás", h1)}
+            ${heatRow("Apoio Elétrico", h2)}
+            ${heatRow("Recirculação", h3)}
+          </div>
+        </div>
+    """.trim()
+
+    return css + body
 }
