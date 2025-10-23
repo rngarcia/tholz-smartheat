@@ -5,9 +5,6 @@ This is a very initial release for Tholz SmartHeat v2, based on the driver devel
 Things that are working:
 - Sensors temperatures
 - Heat Mode
-
-Thinks noy working
-- Aux output controls
-
-Things not implemented:
-- Setpoints configurations
+- Control solar, gas, eletric and recirculation pumps
+- Togle Heat Mode
+- Heat setpoint

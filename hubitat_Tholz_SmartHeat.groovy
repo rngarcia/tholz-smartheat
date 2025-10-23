@@ -1,6 +1,6 @@
 /*
  * Tholz SmartHeat — Hubitat Driver (TCP)
- * Versão: 1.0 — Build: 2025-10-22
+ * Versão: 1.1 — Build: 2025-10-22
  * Base: VH / TRATO | Ajustes: RNG/ChatGPT
  * - Conexão via rawSocket (porta 4000)
  * - getDevice / setDevice
@@ -14,8 +14,9 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import groovy.transform.Field
 
-@Field static final String DRIVER_VERSION    = "1.0"
+@Field static final String DRIVER_VERSION    = "1.1"
 @Field static final String DRIVER_BUILD_DATE = "2025-10-22"
+@Field static final List<String> HEAT_MODE_OPTIONS = ['Off','Ligado','Automático','Econômico']
 
 metadata {
     definition(name: "Tholz SmartHeat", namespace: "rng", author: "RNG/ChatGPT") {
@@ -37,20 +38,27 @@ metadata {
         command "heatUp1C"
         command "heatDown1C"
         command "toggleHeatMode"
-        
-        command "apoioEletricoOn"
-        command "apoioEletricoOff"
-        command "recirculacaoOn"
-        command "recirculacaoOff"
+        command "showDriverInfo"
 
-        // --- Saidas ---
-        attribute "apoioEletrico", "string"
-		attribute "recirculacao", "string"
+        // --- Controles dedicados (dropdown) para cada função mapeada em heat0..heat3 ---
+        command "setApoioSolar",              [[name:"estado*", type:"ENUM", constraints:["Ligado","Desligado"]]]
+        command "setApoioGas",                [[name:"estado*", type:"ENUM", constraints:["Ligado","Desligado"]]]
+        command "setApoioEletrico",           [[name:"estado*", type:"ENUM", constraints:["Ligado","Desligado"]]]
+        command "setRecirculacaoBarrilete",   [[name:"estado*", type:"ENUM", constraints:["Ligado","Desligado"]]]
 
         // --- Heatings (atributos no PAI) ---
         attribute "heat0Mode", "string"
         attribute "heat0On", "string"
         attribute "heat0Setpoint", "number"
+
+        // --- Estados das funções mapeadas por canal ---
+        attribute "apoioSolar", "string"              // via heat0.opMode (1=on,0=off)
+        attribute "apoioGas", "string"                // via heat1.opMode
+        attribute "apoioEletrico", "string"           // via heat2.opMode
+        attribute "recirculacaoBarrilete", "string"   // via heat3.opMode
+
+        // Lista de modos suportados (exposta para Rule Machine / apps)
+        attribute "supportedHeatModes", "string"   // JSON string com a lista
 
         // Renomeações solicitadas
         attribute "tempColetor", "number"        // t1
@@ -65,8 +73,8 @@ metadata {
         attribute "fwSec",    "string"
 
         // --- Info do driver ---
-+       attribute "driverVersion", "string"
-+       attribute "driverBuildDate", "string"
+       attribute "driverVersion", "string"
+       attribute "driverBuildDate", "string"
 
     }
 
@@ -82,6 +90,7 @@ def installed() {
     logInfo "Installed — Tholz SmartHeat v${DRIVER_VERSION} (build ${DRIVER_BUILD_DATE})"
     sendEvent(name:"numberOfButtons", value:20)
     sendDriverInfo()
+    publishSupportedHeatModes()
 }
 
 def updated() {
@@ -90,12 +99,13 @@ def updated() {
     unschedule()
     state.remove("rxBuf")
     sendDriverInfo()
+    publishSupportedHeatModes()
     initialize()
 }
 
 def initialize() {
     logInfo "Initializing — Tholz SmartHeat v${DRIVER_VERSION} (build ${DRIVER_BUILD_DATE})"
-+   sendDriverInfo()
+    sendDriverInfo()
     connectSocket()
     scheduleRefresh()
 }
@@ -113,10 +123,7 @@ def reconnect() {
     runIn(2, "connectSocket")
 }
 
-void apoioEletricoOn()  { setOutputById(1, true);  sendEvent(name:"apoioEletrico", value:"on");  runIn(1, "getDevice") }
-void apoioEletricoOff() { setOutputById(1, false); sendEvent(name:"apoioEletrico", value:"off"); runIn(1, "getDevice") }
-void recirculacaoOn()   { setOutputById(3, true);  sendEvent(name:"recirculacao",  value:"on");  runIn(1, "getDevice") }
-void recirculacaoOff()  { setOutputById(3, false); sendEvent(name:"recirculacao",  value:"off"); runIn(1, "getDevice") }
+def showDriverInfo() { sendDriverInfo() }
 
 private void connectSocket() {
   try {
@@ -169,6 +176,16 @@ def toggleHeatMode() {
     logInfo "toggleHeatMode: alternando de ${cur} para ${next}"
     setHeatMode(next)
 }
+
+// Publica a lista de modos suportados como JSON string (p/ Rule Machine enxergar via atributo)
+private void publishSupportedHeatModes() {
+    try {
+        String json = JsonOutput.toJson(HEAT_MODE_OPTIONS)
+        sendEvent(name: "supportedHeatModes", value: json, descriptionText: "Modos de aquecimento suportados atualizados")
+    } catch (e) {
+        logWarn "Falha ao publicar supportedHeatModes: ${e}"
+    }
+    }
 
 // ======== Escrita ========
 
@@ -362,10 +379,6 @@ if (outs) {
             cd.updateDataValue("outputId", "${idVal}")
         }
         componentUpdate(cd, isOn ? "on" : "off")
-
-        // publica só os que queremos
-        if (idVal == 1)  sendEvent(name:"apoioEletrico", value: isOn ? "on" : "off")
-        if (idVal == 3)  sendEvent(name:"recirculacao",  value: isOn ? "on" : "off")
     }
 
     // guarda snapshot pro mapeamento futuro
@@ -383,6 +396,16 @@ if (heat3?.t4 != null) {
     BigDecimal tRecirc = cFromRaw(heat3.t4)
     if (tRecirc != null) sendEvent(name:"tempRecirculacao", value:tRecirc, unit:"°C")
 }
+
+// --------- Estados por função (opMode: 1=Ligado / 0=Desligado) ----------
+Integer h0op = (heat0?.opMode instanceof Number) ? (heat0.opMode as Integer) : null
+Integer h1op = (heats?.heat1?.opMode instanceof Number) ? (heats.heat1.opMode as Integer) : null
+Integer h2op = (heats?.heat2?.opMode instanceof Number) ? (heats.heat2.opMode as Integer) : null
+Integer h3op = (heats?.heat3?.opMode instanceof Number) ? (heats.heat3.opMode as Integer) : null
+if (h0op != null) sendEvent(name:"apoioSolar",            value: (h0op == 1 ? "on" : "off"))
+if (h1op != null) sendEvent(name:"apoioGas",              value: (h1op == 1 ? "on" : "off"))
+if (h2op != null) sendEvent(name:"apoioEletrico",         value: (h2op == 1 ? "on" : "off"))
+if (h3op != null) sendEvent(name:"recirculacaoBarrilete", value: (h3op == 1 ? "on" : "off"))
 }
 
 private String nameForOutputId(Integer idVal) {
@@ -407,11 +430,6 @@ def componentOn(cd) {
     String outKey = cd.getDataValue("outputKey")
     if (outKey) {
         sendJson([command:"setDevice", argument:[outputs:[(outKey):[on:true]]]])
-        Integer idVal = cd.getDataValue("outputId")?.toInteger()
-        if (idVal != null) {
-            if (idVal == 1) sendEvent(name:"apoioEletrico", value:"on")
-            if (idVal == 3) sendEvent(name:"recirculacao",  value:"on")
-        }
         runIn(1, "getDevice")
     }
 }
@@ -420,11 +438,6 @@ def componentOff(cd) {
     String outKey = cd.getDataValue("outputKey")
     if (outKey) {
         sendJson([command:"setDevice", argument:[outputs:[(outKey):[on:false]]]])
-		Integer idVal = cd.getDataValue("outputId")?.toInteger()
-		if (idVal != null) {
-    		if (idVal == 1) sendEvent(name:"apoioEletrico", value:"off")
-    		if (idVal == 3) sendEvent(name:"recirculacao",  value:"off")
-		}
         runIn(1, "getDevice")
     }
 }
@@ -441,6 +454,35 @@ private void componentUpdate(cd, String ev) {
 
 def heatOn()  { setHeatingOnOff(true)  }
 def heatOff() { setHeatingOnOff(false) }
+
+// ======== Comandos dropdown para as funções dedicadas ========
+def setApoioSolar(String estado)            { setHeatOpModeByChannel(0, mapLigadoDesligado(estado)) }
+def setApoioGas(String estado)              { setHeatOpModeByChannel(1, mapLigadoDesligado(estado)) }
+def setApoioEletrico(String estado)         { setHeatOpModeByChannel(2, mapLigadoDesligado(estado)) }
+def setRecirculacaoBarrilete(String estado) { setHeatOpModeByChannel(3, mapLigadoDesligado(estado)) }
+
+private Integer mapLigadoDesligado(String s) {
+    String x = (s ?: "").trim().toLowerCase()
+    if (x in ["ligado","on","1","true"])  return 1
+    if (x in ["desligado","off","0","false"]) return 0
+    logWarn "Valor inválido para estado='${s}', assumindo Desligado(0)"
+    return 0
+}
+
+private void setHeatOpModeByChannel(Integer heatIdx, Integer opVal) {
+    if (heatIdx == null || opVal == null) return
+    String key = "heat${heatIdx}"
+    Map arg = [heatings: [(key): [opMode: opVal, on: (opVal == 1)]]]
+    sendJson([command:"setDevice", argument: arg])
+    // Atualização otimista de atributos específicos
+    switch (heatIdx) {
+        case 0: sendEvent(name:"apoioSolar",            value: opVal==1 ? "on":"off"); break
+        case 1: sendEvent(name:"apoioGas",              value: opVal==1 ? "on":"off"); break
+        case 2: sendEvent(name:"apoioEletrico",         value: opVal==1 ? "on":"off"); break
+        case 3: sendEvent(name:"recirculacaoBarrilete", value: opVal==1 ? "on":"off"); break
+    }
+    runIn(1, "getDevice")
+}
 
 private void setHeatingOnOff(boolean onVal) {
     Map last  = (state?.lastDevice ?: [:]) as Map
