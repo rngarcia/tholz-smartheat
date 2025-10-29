@@ -1,6 +1,6 @@
 # tholz-smartheat
 
-This is a very initial release for Tholz SmartHeat v2, based on the driver developed by https://github.com/hhorigian.
+This is a very initial Hubitat driver release for Tholz SmartHeat v2, based on the driver developed by https://github.com/hhorigian.
 
 Things that are working:
 - Sensors temperatures
@@ -8,3 +8,4 @@ Things that are working:
 - Control solar, gas, eletric and recirculation pumps
 - Togle Heat Mode
 - Heat setpoint
+
