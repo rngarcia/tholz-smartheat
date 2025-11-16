@@ -1,6 +1,6 @@
 /*
  * Tholz SmartHeat — Hubitat Driver (TCP)
- * Versão: 1.2 — Build: 2025-10-22
+ * Versão: 1.3 — Build: 2025-11-16
  * Base: VH / TRATO | Ajustes: RNG/ChatGPT
  * - Conexão via rawSocket (porta 4000)
  * - getDevice / setDevice
@@ -14,8 +14,8 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import groovy.transform.Field
 
-@Field static final String DRIVER_VERSION    = "1.2"
-@Field static final String DRIVER_BUILD_DATE = "2025-10-22"
+@Field static final String DRIVER_VERSION    = "1.3"
+@Field static final String DRIVER_BUILD_DATE = "2025-11-16"
 @Field static final List<String> HEAT_MODE_OPTIONS = ['Off','Ligado','Automático','Econômico']
 
 metadata {
@@ -120,9 +120,33 @@ def initialize() {
 def scheduleRefresh() {
     Integer s = (settings?.autoRefreshSecs ?: 15) as Integer
     if (s < 5) s = 5
-    runIn(2, "refresh")
-    schedule("*/${s} * * * * ?", "refresh")
+
+    // guarda o intervalo em state pra reaproveitar
+    state.refreshInterval = s
+
+    // cancela só o loop antigo
+    unschedule("refreshLoop")
+
+    // primeiro disparo rápido
+    runIn(2, "refreshLoop")
+
+    if (logEnable) log.info "Agendado refreshLoop a cada ${s} segundos."
 }
+
+// loop de refresh periódico
+def refreshLoop() {
+    try {
+        refresh()
+    } catch (e) {
+        logWarn "Erro em refreshLoop: ${e}"
+    }
+
+    Integer s = (state?.refreshInterval ?: (settings?.autoRefreshSecs ?: 15)) as Integer
+    if (s < 5) s = 5
+
+    runIn(s, "refreshLoop")
+}
+
 
 def reconnect() {
     logWarn "Reconnecting by user request..."
@@ -407,11 +431,6 @@ if (heat3?.t4 != null) {
     BigDecimal tRecirc = cFromRaw(heat3.t4)
     if (tRecirc != null) sendEvent(name:"tempRecirculacao", value:tRecirc, unit:"°C")
 }
-
-// Atualiza a tela de status assim que houver um payload válido
-    if (settings?.statusAutoUpdate) {
-        runIn(0, "renderStatus")
-    }
 
 // --------- Estados por função (opMode: 1=Ligado / 0=Desligado) ----------
 Integer h0op = (heat0?.opMode instanceof Number) ? (heat0.opMode as Integer) : null
